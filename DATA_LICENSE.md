@@ -34,6 +34,6 @@ Sewage release event data were downloaded from Southern Water’s **Rivers and S
 ---
 
 ## Attribution guidance
-If you reuse repository data covered by CC BY 4.0, please cite the associated manuscript (DOI to be added) and this repository.
+If you reuse repository data covered by CC BY 4.0, please cite the associated manuscript (DOI to be added) and this repository (https://doi.org/10.5281/zenodo.18121768).
 
 For third-party governed inputs (Visual Crossing; Southern Water Rivers & Seas Watch), consult and comply with the linked terms/portal guidance in addition to citing the upstream sources.
