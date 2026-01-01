@@ -1,0 +1,708 @@
+# Cyanobacteria concentration_Main.R
+#
+#   Brighton experiment (2×2): Warming (Pad_Colour) × Pollution (Pad_Region)
+#   Response: cyanobacteria concentration
+#
+#   Outputs:
+#     1) Per-date Tweedie GLMs(identity)
+#     2) GLM interaction classification table
+#     3) Whole-summer GLM-style visualisation (ggeffects predictions + raw overlay)
+#     4) Conditional per-date panels (pollution-stratified lines/ribbons across pad colour)
+#     5) Whole-season Tweedie GAM + interaction table
+#     6) Whole-season GAM visualisation (smooth predictions + raw overlay)
+#
+#   Evidence/diagnostics (0/1 inflation handling, alternative families/structures) live in:
+#     Cyanobacteria concentration_Additional.R
+
+########## 0) Configuration ##########
+
+library(here)
+
+DATA_CSV <- here("Dataframes", "Full Brighton dataframe.csv")
+
+# Sampling dates (as Date)
+D_JUN  <- as.Date("2023-06-20")
+D_JUL1 <- as.Date("2023-07-06")
+D_JUL2 <- as.Date("2023-07-20")
+D_AUG1 <- as.Date("2023-08-01")
+D_AUG2 <- as.Date("2023-08-17")
+D_SEP1 <- as.Date("2023-09-01")
+D_SEP2 <- as.Date("2023-09-15")
+
+# Labels used across plots/tables
+DATE_LABELS <- c("June", "July 1", "July 2", "August 1", "August 2", "September 1", "September 2")
+
+# Treatment colors
+TREATMENT_COLORS <- c(
+  "Non-Polluted + Ambient" = "grey75",
+  "Non-Polluted + Warm"    = "orange",
+  "Polluted + Ambient"     = "darkgreen",
+  "Polluted + Warm"        = "#CC79A7"
+)
+
+# Legend order
+LEGEND_ORDER <- c(
+  "Polluted + Ambient",
+  "Polluted + Warm",
+  "Non-Polluted + Ambient",
+  "Non-Polluted + Warm"
+)
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(readr)
+  library(lubridate)
+  library(ggeffects)
+  library(colorspace)
+  library(broom)
+  library(cowplot)
+  library(mgcv)
+  library(DT)
+  library(scales)
+  library(tibble)
+  library(statmod)  # Tweedie GLM family() (statmod::tweedie)
+})
+
+# Tweedie GLM family for per-date models:
+#   - Identity link 
+#   - var.power ~ 1.5 is a sensible starting point for zero + positive continuous
+TW_FAM <- statmod::tweedie(var.power = 1.5, link.power = 1)
+
+########## 1) Load & prep data ##########
+
+brighton_data <- readr::read_csv(DATA_CSV, show_col_types = FALSE)
+
+# Parse Sampling_Date: try dmy(); if too many NAs, fall back to ymd()
+if (!inherits(brighton_data$Sampling_Date, "Date")) {
+  tmp_dmy <- suppressWarnings(lubridate::dmy(brighton_data$Sampling_Date))
+  frac_na <- mean(is.na(tmp_dmy))
+  brighton_data$Sampling_Date <- if (frac_na < 0.5) tmp_dmy else
+    suppressWarnings(lubridate::ymd(brighton_data$Sampling_Date))
+}
+
+# Recode factor baselines (controls first):
+#   Pad_Colour: W = Ambient (control); B = Warm (treatment)
+#   Pad_Region: N = Non-Polluted (control); P = Polluted (treatment)
+brighton_data <- brighton_data %>%
+  mutate(
+    Pad_Colour = factor(Pad_Colour, levels = c("W","B")),
+    Pad_Region = factor(Pad_Region, levels = c("N","P"))
+  )
+
+########## 2) Individual-date GLMs (Tweedie–identity) ##########
+
+# Subsets per date
+JUN   <- filter(brighton_data, Sampling_Date == D_JUN)
+JUL_1 <- filter(brighton_data, Sampling_Date == D_JUL1)
+JUL_2 <- filter(brighton_data, Sampling_Date == D_JUL2)
+AUG_1 <- filter(brighton_data, Sampling_Date == D_AUG1)
+AUG_2 <- filter(brighton_data, Sampling_Date == D_AUG2)
+SEP_1 <- filter(brighton_data, Sampling_Date == D_SEP1)
+SEP_2 <- filter(brighton_data, Sampling_Date == D_SEP2)
+
+# Relevel within each subset
+JUN$Pad_Colour   <- relevel(JUN$Pad_Colour,   ref = "W"); JUN$Pad_Region   <- relevel(JUN$Pad_Region,   ref = "N")
+JUL_1$Pad_Colour <- relevel(JUL_1$Pad_Colour, ref = "W"); JUL_1$Pad_Region <- relevel(JUL_1$Pad_Region, ref = "N")
+JUL_2$Pad_Colour <- relevel(JUL_2$Pad_Colour, ref = "W"); JUL_2$Pad_Region <- relevel(JUL_2$Pad_Region, ref = "N")
+AUG_1$Pad_Colour <- relevel(AUG_1$Pad_Colour, ref = "W"); AUG_1$Pad_Region <- relevel(AUG_1$Pad_Region, ref = "N")
+AUG_2$Pad_Colour <- relevel(AUG_2$Pad_Colour, ref = "W"); AUG_2$Pad_Region <- relevel(AUG_2$Pad_Region, ref = "N")
+SEP_1$Pad_Colour <- relevel(SEP_1$Pad_Colour, ref = "W"); SEP_1$Pad_Region <- relevel(SEP_1$Pad_Region, ref = "N")
+SEP_2$Pad_Colour <- relevel(SEP_2$Pad_Colour, ref = "W"); SEP_2$Pad_Region <- relevel(SEP_2$Pad_Region, ref = "N")
+
+# Fit Tweedie GLMs
+glm_JUN   <- glm(Cyanobacteria ~ Pad_Colour * Pad_Region, data = JUN,   family = TW_FAM)
+glm_JUL_1 <- glm(Cyanobacteria ~ Pad_Colour * Pad_Region, data = JUL_1, family = TW_FAM)
+glm_JUL_2 <- glm(Cyanobacteria ~ Pad_Colour * Pad_Region, data = JUL_2, family = TW_FAM)
+glm_AUG_1 <- glm(Cyanobacteria ~ Pad_Colour * Pad_Region, data = AUG_1, family = TW_FAM)
+glm_AUG_2 <- glm(Cyanobacteria ~ Pad_Colour * Pad_Region, data = AUG_2, family = TW_FAM)
+glm_SEP_1 <- glm(Cyanobacteria ~ Pad_Colour * Pad_Region, data = SEP_1, family = TW_FAM)
+glm_SEP_2 <- glm(Cyanobacteria ~ Pad_Colour * Pad_Region, data = SEP_2, family = TW_FAM)
+
+########## 3) GLM interaction classification + summary table ##########
+
+# Interaction classification settings
+extract_cyano_glm_stats <- function(model, date_label) {
+  alpha <- 0.05
+  
+  cs <- broom::tidy(model, conf.int = TRUE, conf.level = 0.95)
+  if (!all(c("conf.low","conf.high") %in% names(cs))) {
+    cs <- cs %>% mutate(
+      conf.low  = estimate - 1.96*std.error,
+      conf.high = estimate + 1.96*std.error
+    )
+  }
+  
+  ic  <- dplyr::filter(cs, term == "(Intercept)")
+  w   <- dplyr::filter(cs, term == "Pad_ColourB")
+  p   <- dplyr::filter(cs, term == "Pad_RegionP")
+  int <- dplyr::filter(cs, term == "Pad_ColourB:Pad_RegionP")
+  
+  # Extract key terms
+  α     <- ic$estimate
+  βw    <- w$estimate
+  βp    <- p$estimate
+  βint  <- int$estimate
+  seint <- int$std.error
+  pint  <- int$p.value
+  if (is.null(pint) || is.na(pint)) {
+    z <- βint / seint
+    pint <- 2 * pnorm(abs(z), lower.tail = FALSE)
+  }
+  
+  # Additive vs observed on the identity scale (GLM link scale here is identity).
+  Δadd <- βw + βp
+  Δobs <- Δadd + βint
+  
+  null_pred <- α + Δadd
+  obs_pred  <- α + Δobs
+  
+  # ±5% equivalence band around the null/additive prediction (identity units).
+  tol     <- 0.05 * abs(null_pred)
+  band_lo <- -tol
+  band_hi <-  tol
+  
+  # 95% CI for interaction term
+  int_lo <- int$conf.low
+  int_hi <- int$conf.high
+  
+  # Direction labels (only used when CI is fully outside ±5% band and p<alpha)
+  dir_label <- dplyr::case_when(
+    (Δadd < 0 & Δobs > 0) ~ "Reversal (Neg to Pos)",
+    (Δadd > 0 & Δobs < 0) ~ "Reversal (Pos to Neg)",
+    (Δadd > 0 &  βint > 0) ~ "Synergism",
+    (Δadd > 0 &  βint < 0) ~ "Antagonism",
+    (Δadd < 0 &  βint < 0) ~ "Synergism",
+    (Δadd < 0 &  βint > 0) ~ "Antagonism",
+    sign(Δadd) == sign(βint) ~ "Synergism (same–sign)",
+    TRUE                     ~ "Antagonism (opp–sign)"
+  )
+  
+  ci_overlaps_band <- !(int_hi < band_lo || int_lo > band_hi)
+  
+  int_class <- dplyr::case_when(
+    is.na(pint) | pint >= alpha ~ "Unclassified (p≥0.05)",
+    ci_overlaps_band            ~ "Additive (CI overlaps ±5%)",
+    TRUE                        ~ dir_label
+  )
+  
+  # Assemble table rows (one row per term, with interaction-only columns populated)
+  cs %>%
+    dplyr::filter(term %in% c("Pad_ColourB","Pad_RegionP","Pad_ColourB:Pad_RegionP")) %>%
+    dplyr::transmute(
+      Date      = date_label,
+      Term      = dplyr::case_when(
+        term == "Pad_ColourB"             ~ "Warming",
+        term == "Pad_RegionP"             ~ "Pollution",
+        term == "Pad_ColourB:Pad_RegionP" ~ "Warming × Pollution"
+      ),
+      Estimate     = formatC(estimate,  format="f", digits=4),
+      `Std. Error` = formatC(std.error, format="f", digits=4),
+      `p-value`    = ifelse(p.value < 1e-4,
+                            formatC(p.value, format="e", digits=2),
+                            formatC(p.value, format="f", digits=3)),
+      `ΔAdd (identity)` = if_else(Term=="Warming × Pollution", round(Δadd, 4), NA_real_),
+      `ΔObs (identity)` = if_else(Term=="Warming × Pollution", round(Δobs, 4), NA_real_),
+      `Null Prediction` = if_else(Term=="Warming × Pollution", round(null_pred, 4), NA_real_),
+      `Obs Prediction`  = if_else(Term=="Warming × Pollution", round(obs_pred, 4),  NA_real_),
+      `Interaction 95% CI (identity)` =
+        if_else(Term=="Warming × Pollution",
+                sprintf("[%.4f, %.4f]", int_lo, int_hi), NA_character_),
+      `±5% Band (identity)` =
+        if_else(Term=="Warming × Pollution",
+                sprintf("[%.4f, %.4f]", band_lo, band_hi), NA_character_),
+      `Interaction Class` = if_else(Term=="Warming × Pollution", int_class, NA_character_),
+      `Warming -> under Pollution (identity)` =
+        if_else(Term=="Warming × Pollution",
+                sprintf("%+.4f to %+.4f", βw, βw + βint), NA_character_),
+      `Pollution -> under Warming (identity)` =
+        if_else(Term=="Warming × Pollution",
+                sprintf("%+.4f to %+.4f", βp, βp + βint), NA_character_)
+    )
+}
+
+cyano_glm_results_table <- dplyr::bind_rows(
+  extract_cyano_glm_stats(glm_JUN,   "June"),
+  extract_cyano_glm_stats(glm_JUL_1, "July 1"),
+  extract_cyano_glm_stats(glm_JUL_2, "July 2"),
+  extract_cyano_glm_stats(glm_AUG_1, "August 1"),
+  extract_cyano_glm_stats(glm_AUG_2, "August 2"),
+  extract_cyano_glm_stats(glm_SEP_1, "September 1"),
+  extract_cyano_glm_stats(glm_SEP_2, "September 2")
+)
+
+DT::datatable(
+  cyano_glm_results_table,
+  caption = "Cyanobacteria (Tweedie GLM, identity link): fixed effects & interaction summary",
+  options = list(pageLength = 10, scrollX = TRUE)
+)
+
+########## 4) Whole-summer GLM-style visualisation ##########
+
+# Predictions per date
+pr_JUN <- ggeffects::ggpredict(glm_JUN, terms = c("Pad_Colour","Pad_Region")) %>%
+  mutate(
+    Sampling_Date = "June",
+    Pad_Region = factor(group, levels = c("N","P"), labels = c("Non-Polluted","Polluted")),
+    Pad_Colour = factor(x,     levels = c("W","B"), labels = c("Ambient","Warm")),
+    Treatment  = paste(Pad_Region, Pad_Colour, sep = " + ")
+  )
+
+pr_JUL1 <- ggeffects::ggpredict(glm_JUL_1, terms = c("Pad_Colour","Pad_Region")) %>%
+  mutate(
+    Sampling_Date = "July 1",
+    Pad_Region = factor(group, levels = c("N","P"), labels = c("Non-Polluted","Polluted")),
+    Pad_Colour = factor(x,     levels = c("W","B"), labels = c("Ambient","Warm")),
+    Treatment  = paste(Pad_Region, Pad_Colour, sep = " + ")
+  )
+
+pr_JUL2 <- ggeffects::ggpredict(glm_JUL_2, terms = c("Pad_Colour","Pad_Region")) %>%
+  mutate(
+    Sampling_Date = "July 2",
+    Pad_Region = factor(group, levels = c("N","P"), labels = c("Non-Polluted","Polluted")),
+    Pad_Colour = factor(x,     levels = c("W","B"), labels = c("Ambient","Warm")),
+    Treatment  = paste(Pad_Region, Pad_Colour, sep = " + ")
+  )
+
+pr_AUG1 <- ggeffects::ggpredict(glm_AUG_1, terms = c("Pad_Colour","Pad_Region")) %>%
+  mutate(
+    Sampling_Date = "August 1",
+    Pad_Region = factor(group, levels = c("N","P"), labels = c("Non-Polluted","Polluted")),
+    Pad_Colour = factor(x,     levels = c("W","B"), labels = c("Ambient","Warm")),
+    Treatment  = paste(Pad_Region, Pad_Colour, sep = " + ")
+  )
+
+pr_AUG2 <- ggeffects::ggpredict(glm_AUG_2, terms = c("Pad_Colour","Pad_Region")) %>%
+  mutate(
+    Sampling_Date = "August 2",
+    Pad_Region = factor(group, levels = c("N","P"), labels = c("Non-Polluted","Polluted")),
+    Pad_Colour = factor(x,     levels = c("W","B"), labels = c("Ambient","Warm")),
+    Treatment  = paste(Pad_Region, Pad_Colour, sep = " + ")
+  )
+
+pr_SEP1 <- ggeffects::ggpredict(glm_SEP_1, terms = c("Pad_Colour","Pad_Region")) %>%
+  mutate(
+    Sampling_Date = "September 1",
+    Pad_Region = factor(group, levels = c("N","P"), labels = c("Non-Polluted","Polluted")),
+    Pad_Colour = factor(x,     levels = c("W","B"), labels = c("Ambient","Warm")),
+    Treatment  = paste(Pad_Region, Pad_Colour, sep = " + ")
+  )
+
+pr_SEP2 <- ggeffects::ggpredict(glm_SEP_2, terms = c("Pad_Colour","Pad_Region")) %>%
+  mutate(
+    Sampling_Date = "September 2",
+    Pad_Region = factor(group, levels = c("N","P"), labels = c("Non-Polluted","Polluted")),
+    Pad_Colour = factor(x,     levels = c("W","B"), labels = c("Ambient","Warm")),
+    Treatment  = paste(Pad_Region, Pad_Colour, sep = " + ")
+  )
+
+all_preds <- bind_rows(pr_JUN, pr_JUL1, pr_JUL2, pr_AUG1, pr_AUG2, pr_SEP1, pr_SEP2) %>%
+  filter(!is.na(Treatment))
+
+all_preds$Sampling_Date <- factor(all_preds$Sampling_Date, levels = DATE_LABELS)
+
+# Harmonise raw data labels for overlay
+brighton_data_plot <- brighton_data %>%
+  mutate(
+    Pad_Region = factor(Pad_Region, levels = c("N","P"), labels = c("Non-Polluted","Polluted")),
+    Pad_Colour = factor(Pad_Colour, levels = c("W","B"), labels = c("Ambient","Warm")),
+    Treatment  = paste(Pad_Region, Pad_Colour, sep = " + "),
+    Sampling_Date = case_when(
+      Sampling_Date == D_JUN  ~ "June",
+      Sampling_Date == D_JUL1 ~ "July 1",
+      Sampling_Date == D_JUL2 ~ "July 2",
+      Sampling_Date == D_AUG1 ~ "August 1",
+      Sampling_Date == D_AUG2 ~ "August 2",
+      Sampling_Date == D_SEP1 ~ "September 1",
+      Sampling_Date == D_SEP2 ~ "September 2",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  mutate(Sampling_Date = factor(Sampling_Date, levels = levels(all_preds$Sampling_Date))) %>%
+  filter(!is.na(Sampling_Date))
+
+# Data-driven upper y-axis for visualisation
+y_upper_glm <- max(c(all_preds$conf.high, brighton_data_plot$Cyanobacteria), na.rm = TRUE) * 1.10
+
+# Plot
+cyano_line_plot <- ggplot(all_preds, aes(x = Sampling_Date, y = predicted, group = Treatment)) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high, fill = Treatment), alpha = 0.1, color = NA) +
+  geom_line(
+    aes(color = Treatment),
+    linewidth = 0.5,
+    alpha = 0.3,
+    linetype = "dashed"
+  ) +
+  geom_point(
+    aes(fill = Treatment, colour = after_scale(colorspace::darken(fill, 0.35))),
+    shape = 21,
+    size  = 2.7,  
+    stroke = 0.9, 
+    show.legend = FALSE
+  ) +
+  geom_jitter(
+    data = brighton_data_plot,
+    aes(x = Sampling_Date, y = Cyanobacteria, color = Treatment),
+    shape = 20, width = 0.25, height = 0.00, alpha = 0.7, size = 1.5, inherit.aes = FALSE
+  ) +
+  labs(
+    title = "Cyanobacteria concentration",
+    x = "Sampling date",
+    y = expression("Cyanobacteria concentration (" ~ plain("mg") * "/" * plain("cm")^2 * ")")
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title   = element_text(face = "bold", hjust = 0.5, size = 12),
+    axis.title   = element_text(size = 10),
+    axis.text    = element_text(size = 7),
+    legend.title = element_text(face = "bold", size = 9),
+    legend.text  = element_text(size = 8),
+    legend.box.background = element_blank(),
+    axis.title.x = element_text(margin = margin(t = 10))
+  ) +
+  scale_y_continuous(limits = c(0, y_upper_glm), oob = scales::squish) +
+  scale_color_manual(values = TREATMENT_COLORS, breaks = LEGEND_ORDER) +
+  scale_fill_manual(values = TREATMENT_COLORS, breaks = LEGEND_ORDER)
+
+print(cyano_line_plot)
+
+########## 5) Conditional plot panels ##########
+
+# Within each date: predicted means across Pad_Colour, stratified by Pad_Region
+REGION_LEVELS <- c("Non-Polluted", "Polluted")
+REGION_VALUES <- unname(c(
+  TREATMENT_COLORS["Non-Polluted + Ambient"],
+  TREATMENT_COLORS["Polluted + Ambient"]
+))
+
+# Extract the interaction p-value from the fitted model
+get_interaction_pvalue <- function(model) {
+  sm <- broom::tidy(model)
+  r  <- dplyr::filter(sm, term == "Pad_ColourB:Pad_RegionP")
+  if (nrow(r) > 0) r$p.value[1] else NA_real_
+}
+
+create_conditional_plot <- function(model, date_label, include_legend = FALSE) {
+  
+  # ggpredict gives predicted mean value + CI at Ambient/Warm for each region
+  pr <- ggeffects::ggpredict(model, terms = c("Pad_Colour","Pad_Region")) %>%
+    dplyr::mutate(
+      Pad_Region = factor(group, levels = c("N","P"), labels = REGION_LEVELS) |> droplevels(),
+      x          = factor(x,     levels = c("W","B"), labels = c("Ambient","Warm"))
+    ) %>%
+    dplyr::filter(!is.na(x), !is.na(Pad_Region))
+  
+  p_val <- get_interaction_pvalue(model)
+  p_lab <- ifelse(is.na(p_val), "p = NA", paste0("p = ", signif(p_val, 4)))
+  
+  ggplot(pr, aes(x = .data$x, y = .data$predicted, group = .data$Pad_Region)) +
+    geom_ribbon(aes(ymin = .data$conf.low, ymax = .data$conf.high, fill = .data$Pad_Region),
+                alpha = 0.2, colour = NA) +
+    geom_line(aes(color = .data$Pad_Region), linewidth = 0.8) +
+    geom_point(aes(color = .data$Pad_Region), size = 2) +
+    labs(
+      title    = date_label,
+      subtitle = p_lab,
+      x = "Pad colour",
+      y = expression("Cyanobacteria concentration (" ~ plain("mg") * "/" * plain("cm")^2 * ")")
+    ) +
+    theme_minimal() +
+    theme(
+      plot.title    = element_text(face = "bold", hjust = 0.5, size = 12, margin = margin(b = 1)),
+      plot.subtitle = element_text(face = "italic", hjust = 0.5, size = 9, margin = margin(b = 4)),
+      plot.margin   = margin(5, 5, 5, 5),
+      axis.title    = element_text(size = 10),
+      axis.text     = element_text(size = 7),
+      legend.title  = element_text(face = "bold", size = 9),
+      legend.text   = element_text(size = 8),
+      legend.position = if (include_legend) "right" else "none",
+      legend.box.background = element_blank()
+    ) +
+    scale_color_manual(
+      name   = "Pad region",
+      breaks = REGION_LEVELS,
+      values = REGION_VALUES
+    ) +
+    scale_fill_manual(
+      name   = "Pad region",
+      breaks = REGION_LEVELS,
+      values = REGION_VALUES,
+      guide  = "none"
+    ) +
+    guides(color = guide_legend(override.aes = list(shape = 16, size = 4, fill = NA)))
+}
+
+plot_JUN   <- create_conditional_plot(glm_JUN,   "June") +
+  theme(plot.subtitle = element_text(face = "plain", hjust = 0.5, size = 9, margin = margin(b = 4)))
+
+plot_JUL_1 <- create_conditional_plot(glm_JUL_1, "July 1")
+
+plot_JUL_2 <- create_conditional_plot(glm_JUL_2, "July 2") +
+  theme(plot.subtitle = element_text(face = "plain", hjust = 0.5, size = 9, margin = margin(b = 4)))
+
+plot_AUG_1 <- create_conditional_plot(glm_AUG_1, "August 1")
+plot_AUG_2 <- create_conditional_plot(glm_AUG_2, "August 2")
+plot_SEP_1 <- create_conditional_plot(glm_SEP_1, "September 1")
+plot_SEP_2 <- create_conditional_plot(glm_SEP_2, "September 2", include_legend = TRUE)
+
+# Keep just one legend for the panel plot
+legs <- cowplot::get_plot_component(plot_SEP_2, "guide-box", return_all = TRUE)
+legend_g <- legs[[1]]
+
+panel_plot <- cowplot::ggdraw() +
+  cowplot::draw_plot(plot_JUN,   x = 0.00, y = 0.55, width = 0.25, height = 0.45) +
+  cowplot::draw_plot(plot_JUL_1, x = 0.25, y = 0.55, width = 0.25, height = 0.45) +
+  cowplot::draw_plot(plot_JUL_2, x = 0.50, y = 0.55, width = 0.25, height = 0.45) +
+  cowplot::draw_plot(plot_AUG_1, x = 0.75, y = 0.55, width = 0.25, height = 0.45) +
+  cowplot::draw_plot(plot_AUG_2, x = 0.00, y = 0.05, width = 0.25, height = 0.45) +
+  cowplot::draw_plot(plot_SEP_1, x = 0.25, y = 0.05, width = 0.25, height = 0.45) +
+  cowplot::draw_plot(plot_SEP_2 + theme(legend.position = "none"),
+                     x = 0.50, y = 0.05, width = 0.25, height = 0.45) +
+  cowplot::draw_grob(legend_g, x = 0.75, y = 0.20, width = 0.25, height = 0.40)
+
+print(panel_plot)
+
+########## 6) Whole-season GAM (Tweedie–identity) ##########
+
+brighton_data_GAM <- brighton_data %>%
+  dplyr::mutate(
+    Days_Since_Start = as.numeric(Sampling_Date - min(Sampling_Date, na.rm = TRUE))
+  ) %>%
+  dplyr::filter(!is.na(Sampling_Date))
+
+# Whole-season GAM (Tweedie, identity):
+cyano_gam_model <- mgcv::gam(
+  Cyanobacteria ~
+    s(Days_Since_Start, by = interaction(Pad_Colour, Pad_Region), k = 7) +
+    Pad_Colour * Pad_Region +
+    s(Pad_ID, bs = "re"),
+  data   = brighton_data_GAM,
+  family = mgcv::tw(link = "identity"),
+  method = "REML"
+)
+
+# About the warning:
+#   - "NA/Inf replaced by maximum positive value" originates inside mgcv's Tweedie theta-search: tries candidate p values and sometimes the likelihood evaluation briefly will blow up.
+#   - It is a warning about numerical evaluation during the internal search for p, not that the fitted model is invalid.
+#   - The fitted model converged cleanly, Hessian is positive definite, fitted values are non-negative, and residuals are acceptable (see 'Additional' script).
+#   - Given diagnostics (see 'Additional'), we treat the notification as an optimisation warning, but retain the model, and troubleshoot with alternative variants.
+
+print(summary(cyano_gam_model))
+
+########## 7) GAM parametric effects & interaction summary ##########
+
+# Extract the parametric table and apply the same interaction classification logic as GLMs.
+extract_cyano_gam_model_stats <- function(model, label) {
+  alpha <- 0.05
+  
+  # Parametric coefficient table from mgcv
+  ptab <- as.data.frame(summary(model)$p.table) %>%
+    tibble::rownames_to_column("term")
+  
+  # Normalize column names robustly across mgcv versions
+  names(ptab) <- names(ptab) %>% tolower() %>% gsub("[[:punct:] ]+","_", .)
+  pcol <- grep("^(pr_|p_value)", names(ptab), value = TRUE)[1]
+  ptab <- dplyr::rename(ptab, p_value = all_of(pcol))
+  
+  # Term matching
+  term_lc <- tolower(ptab$term)
+  i_int <- which(term_lc %in% "(intercept)")
+  i_w   <- which(term_lc %in% "pad_colourb")
+  i_p   <- which(term_lc %in% "pad_regionp")
+  i_ix  <- which(term_lc %in% "pad_colourb:pad_regionp")
+  
+  # Helper to get the first matched value (or NA if not found)
+  gv <- function(col, idx) if (length(idx)) ptab[[col]][idx[1]] else NA_real_
+  
+  # Extract parametric coefficients
+  α     <- gv("estimate",  i_int)
+  βw    <- gv("estimate",  i_w)
+  βp    <- gv("estimate",  i_p)
+  βint  <- gv("estimate",  i_ix)
+  se_w  <- gv("std_error", i_w)
+  se_p  <- gv("std_error", i_p)
+  se_i  <- gv("std_error", i_ix)
+  pv_w  <- gv("p_value",   i_w)
+  pv_p  <- gv("p_value",   i_p)
+  pv_i  <- gv("p_value",   i_ix)
+  
+  # Additive vs observed
+  Δadd <- βw + βp
+  Δobs <- Δadd + βint
+  
+  null_pred <- α + Δadd
+  obs_pred  <- α + Δobs
+  
+  int_lo <- βint - 1.96*se_i
+  int_hi <- βint + 1.96*se_i
+  
+  tol <- 0.05 * abs(null_pred)
+  # Equivalence band logic based on CI
+  ci_overlaps_band <- !(int_hi < -tol || int_lo > tol)
+  
+  # Direction labels (only used if CI is fully outside equivalence band and p<0.05)
+  dir_label <- dplyr::case_when(
+    (Δadd < 0 & Δobs > 0) ~ "Reversal (Neg to Pos)",
+    (Δadd > 0 & Δobs < 0) ~ "Reversal (Pos to Neg)",
+    (Δadd > 0 &  βint > 0) ~ "Synergism",
+    (Δadd > 0 &  βint < 0) ~ "Antagonism",
+    (Δadd < 0 &  βint < 0) ~ "Synergism",
+    (Δadd < 0 &  βint > 0) ~ "Antagonism",
+    sign(Δadd) == sign(βint) ~ "Synergism (same–sign)",
+    TRUE                     ~ "Antagonism (opp–sign)"
+  )
+  
+  # Final classification with p-value gate (same as GLMs)
+  int_class <- dplyr::case_when(
+    is.na(pv_i) | pv_i >= alpha ~ "Unclassified (p≥0.05)",
+    ci_overlaps_band            ~ "Additive (CI overlaps ±5%)",
+    TRUE                        ~ dir_label
+  )
+  
+  # Assemble table for GAM parametric coefficients
+  tibble::tibble(
+    Date                 = label,
+    Term                 = c("Warming","Pollution","Warming × Pollution"),
+    Estimate             = c(βw, βp, βint),
+    `Std. Error`         = c(se_w, se_p, se_i),
+    `p-value`            = c(pv_w, pv_p, pv_i),
+    `ΔAdd (identity)`    = c(NA, NA, round(Δadd, 4)),
+    `ΔObs (identity)`    = c(NA, NA, round(Δobs, 4)),
+    `Null Prediction`    = c(NA, NA, round(null_pred, 4)),
+    `Observed Prediction`= c(NA, NA, round(obs_pred,  4)),
+    `Interaction 95% CI (identity)` =
+      c(NA, NA, ifelse(any(is.na(c(int_lo,int_hi))), NA_character_,
+                       sprintf("[%.4f, %.4f]", int_lo, int_hi))),
+    `Interaction Class`  = c(NA, NA, int_class),
+    `Warming -> under Pollution (identity)` =
+      c(NA, NA, sprintf("%+.4f t0 %+.4f", βw, βw + βint)),
+    `Pollution -> under Warming (identity)` =
+      c(NA, NA, sprintf("%+.4f to %+.4f", βp, βp + βint))
+  ) %>%
+    mutate(
+      Estimate     = round(Estimate, 4),
+      `Std. Error` = round(`Std. Error`, 4),
+      `p-value`    = ifelse(is.na(`p-value`), NA, format.pval(`p-value`, digits = 3, eps = 0.001))
+    )
+}
+
+cyano_gam_results_table <- extract_cyano_gam_model_stats(cyano_gam_model, "Whole Season")
+
+DT::datatable(
+  cyano_gam_results_table,
+  caption = "Cyanobacteria GAM (Tweedie, identity): parametric effects & interaction summary",
+  options = list(pageLength = 10, scrollX = TRUE)
+)
+
+########## 8) Whole-season GAM visualisation ##########
+
+# Map calendar dates to the "Days_Since_Start" axis used by GAM
+start_date  <- min(brighton_data_GAM$Sampling_Date, na.rm = TRUE)
+date_breaks <- as.numeric(c(D_JUN, D_JUL1, D_JUL2, D_AUG1, D_AUG2, D_SEP1, D_SEP2) - start_date)
+
+# Prediction grid across the full season
+pred_grid <- tidyr::expand_grid(
+  Days_Since_Start = seq(min(brighton_data_GAM$Days_Since_Start, na.rm = TRUE),
+                         max(brighton_data_GAM$Days_Since_Start, na.rm = TRUE),
+                         length.out = 300),
+  Pad_Colour = factor(c("W","B"), levels = c("W","B")),
+  Pad_Region = factor(c("N","P"), levels = c("N","P"))
+)
+
+datepoint_grid <- tidyr::expand_grid(
+  Days_Since_Start = date_breaks,
+  Pad_Colour = factor(c("W","B"), levels = c("W","B")),
+  Pad_Region = factor(c("N","P"), levels = c("N","P"))
+)
+
+# Because the model contains s(Pad_ID), predict.gam requires a Pad_ID in newdata
+id_val <- brighton_data_GAM$Pad_ID[which(!is.na(brighton_data_GAM$Pad_ID))][1]
+
+# Predict on link scale
+pr_link <- predict(
+  cyano_gam_model,
+  newdata = pred_grid,
+  type    = "link",
+  se.fit  = TRUE,
+  exclude = "s(Pad_ID)",
+  newdata.guaranteed = TRUE
+)
+
+# Back-transform and build ribbons
+gam_preds <- pred_grid %>%
+  mutate(
+    fit       = pr_link$fit,
+    se        = pr_link$se.fit,
+    predicted = fit,
+    conf.low  = fit - 1.96 * se,
+    conf.high = fit + 1.96 * se,
+    Pad_Region_lbl = factor(Pad_Region, levels = c("N","P"), labels = c("Non-Polluted","Polluted")),
+    Pad_Colour_lbl = factor(Pad_Colour, levels = c("W","B"), labels = c("Ambient","Warm")),
+    Treatment      = paste(Pad_Region_lbl, Pad_Colour_lbl, sep = " + ")
+  )
+
+dp_link <- predict(
+  cyano_gam_model,
+  newdata = datepoint_grid,
+  type    = "link",
+  se.fit  = TRUE,
+  exclude = "s(Pad_ID)",
+  newdata.guaranteed = TRUE
+)
+
+# Date-point predictions at sampling breaks
+gam_datepoints <- datepoint_grid %>%
+  mutate(
+    fit       = dp_link$fit,
+    se        = dp_link$se.fit,
+    predicted = fit,
+    Pad_Region_lbl = factor(Pad_Region, levels = c("N","P"), labels = c("Non-Polluted","Polluted")),
+    Pad_Colour_lbl = factor(Pad_Colour, levels = c("W","B"), labels = c("Ambient","Warm")),
+    Treatment      = paste(Pad_Region_lbl, Pad_Colour_lbl, sep = " + ")
+  )
+
+brighton_data_GAM_plot <- brighton_data_GAM %>%
+  mutate(
+    Pad_Region_lbl = factor(Pad_Region, levels = c("N","P"), labels = c("Non-Polluted","Polluted")),
+    Pad_Colour_lbl = factor(Pad_Colour, levels = c("W","B"), labels = c("Ambient","Warm")),
+    Treatment      = paste(Pad_Region_lbl, Pad_Colour_lbl, sep = " + ")
+  )
+
+y_upper_gam <- max(c(gam_preds$conf.high, brighton_data_GAM$Cyanobacteria), na.rm = TRUE) * 1.10
+
+# GAM plot
+cyano_gam_timeplot <- ggplot(gam_preds, aes(x = Days_Since_Start, y = predicted, group = Treatment)) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high, fill = Treatment), alpha = 0.15, color = NA) +
+  geom_line(aes(color = Treatment), linewidth = 0.7) +
+  geom_point(
+    data = gam_datepoints,
+    aes(x = Days_Since_Start, y = predicted, fill = Treatment,
+        colour = after_scale(colorspace::darken(fill, 0.35)) ),
+    shape = 21, size = 2.7, stroke = 0.9, show.legend = FALSE
+  ) +
+  geom_jitter(
+    data = brighton_data_GAM_plot,
+    aes(x = Days_Since_Start, y = Cyanobacteria, color = Treatment),
+    shape = 20, width = 0.8, height = 0, alpha = 0.7, size = 1.5, inherit.aes = FALSE
+  ) +
+  scale_x_continuous(breaks = date_breaks, labels = DATE_LABELS,
+                     expand = expansion(mult = c(0.02, 0.02))) +
+  scale_y_continuous(limits = c(0, y_upper_gam), oob = scales::squish) +
+  scale_color_manual(values = TREATMENT_COLORS, breaks = LEGEND_ORDER) +
+  scale_fill_manual(values = TREATMENT_COLORS,  breaks = LEGEND_ORDER) +
+  labs(
+    title = "Whole-season GAM: cyanobacteria concentration",
+    x = "Sampling date",
+    y = expression("Cyanobacteria concentration (" ~ plain("mg") * "/" * plain("cm")^2 * ")")
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title   = element_text(face = "bold", hjust = 0.5, size = 12),
+    axis.title   = element_text(size = 10),
+    axis.text    = element_text(size = 7),
+    legend.title = element_text(face = "bold", size = 9),
+    legend.text  = element_text(size = 8),
+    legend.box.background = element_blank(),
+    axis.title.x = element_text(margin = margin(t = 10))
+  )
+
+print(cyano_gam_timeplot)
