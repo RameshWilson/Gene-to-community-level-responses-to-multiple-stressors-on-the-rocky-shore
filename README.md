@@ -6,7 +6,7 @@ Code and data for the manuscript: **Gene-to-community level responses to multipl
 - `Brighton project.Rproj`: RStudio project file (sets the working context).
 - `Key analyses/`: core manuscript analysis scripts.
 - `Additional analyses/`: diagnostics, sensitivity checks, and supplementary figure/processing scripts.
-- `Dataframes/`: CSV inputs used by the scripts.
+- `Dataframes/`: CSV inputs used by the scripts and selected large supplementary outputs (see below).
 
 ## Quick start (recommended workflow)
 1. Install **Git**.
@@ -22,6 +22,23 @@ Code and data for the manuscript: **Gene-to-community level responses to multipl
 - R (analyses run on **R 4.4.3**).
 - RStudio (recommended).
 - Git.
+
+---
+
+## Transcriptomics
+
+### Raw RNA-seq data
+- Raw sequencing data are deposited at **ArrayExpress** (Accession: **E-MTAB-16541**).
+
+### Derived transcriptomics outputs included in this repository 
+To support transparency and interpretation, two large workbooks are included in the 'Dataframes' folder:
+- **Annotated DEG list and interaction classes**: DEG-level outputs across contrasts; log2FC, significance, annotations/database hits, and interaction classifications 
+- **GO enrichment results**: GO term enrichment summaries for DEG sets across contrasts
+
+### Illustrative DESeq2 contrast snippet
+- Provided in 'Additional analyses' folder
+- This is a **minimal script** showing the DESeq2 model design and contrast definitions used for Figure 4 of the manuscript/summary tables above
+- It is **not** a full transcriptomics pipeline: see ArrayExpress for raw data provenance and workflow context.
 
 ---
 
