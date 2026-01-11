@@ -75,7 +75,7 @@ Daily precipitation was obtained from **Visual Crossing** during a time-limited 
 ## How to cite
 If you use this repository, please cite:
 - **Manuscript:** citation + DOI (to be added)
-- **Data**: https://doi.org/10.5281/zenodo.18121768
+- **Ecological data**: https://doi.org/10.5281/zenodo.18121767
 
 ## Licence
 - Code licence: see `LICENSE` (MIT).
